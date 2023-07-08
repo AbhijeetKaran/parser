@@ -1,80 +1,72 @@
 import numpy as np
-#import modin.pandas as pd # not working 
 import pandas as pd
 
 
-warning_color = "\033[93m"
-error_color = "\033[91m"
-output_color = "\033[92m"
-color_end = "\033[0m"
-
-
-class GffParser:
-    def __init__(self,filename):
-        self.commonHeader = ['Seqid','Source','Feature','Start','Stop','Score','Strand','Phase']
+class tabFileReader:
+    def __init__(self,filename,bioFileType,metainfo_sep,val_sep):
         self.filename = filename
-        self.commentMode = self.checkMode()
-        print(f"Remove comment mode : {self.commentMode} file" )
-        self.metadata,commentedData = self.extractMetaData()
-        self.data = pd.read_csv(self.filename,sep="\t",header=None,skiprows=commentedData)
-        print(f"{output_color}Data read into memory.{color_end}")
-        self.feature_tags = set(self.data[2].unique())
-        self.feature_objects = self.getFeatureTags()
+        self.fileType = bioFileType
+        self.fileobj = open(filename,'r')
+        self.colSep = metainfo_sep
+        self.valSep = val_sep
 
-    #Check the presence of comment lines. Return 'top' if comment lines are preent at the start of the file else return 'full'
-    def checkMode(self):
-        try:
-            nextOcc = False
-            fh = open(self.filename,'r')
-            for lines in fh:
-                if lines[0] == '#' and nextOcc:
-                    return 'full'
-                elif lines[0] != '#':
-                    nextOcc = True
+        # set header for data based on file type
+        self.fileHeader()
+                
+        # parse data from tab seperated file
+        self.data = None 
+        self.dataParser()
+
+
+#@ based on biological file type provides header file
+    def fileHeader(self):
+        if self.fileType == "gtf" or self.fileType == "gff":
+            self.column_names = ["Seqname","Source","feature","Start","End","score","strand","frame","attribute"]
+        elif self.fileType == "bed":
+            self.column_names = []
+        else:
+            self.column_names = []
+
+#@ retrive index of Documneted/commented lines
+    def retriveCommentIndex(self):
+        indx = []
+        self.fileobj.seek(0)
+        for ix,l in enumerate(self.fileobj):
+            if l[0] == '#':
+                indx.append(ix)
+        self.fileobj.seek(0)
+        return indx
+
+#@ get MetaData from the file 
+    def getMetaData(self):
+        skip_index = self.retriveCommentIndex()
+        filetxt = self.fileobj.readlines()
+        for lineidx in skip_index:
+            print(filetxt[lineidx],end="")
+        self.fileobj.seek(0)
+
+#@ Transforming attribute data into columns
+    def attributeDataTransform(self,stng,v):
+        temp_dict = {}
+        for i in stng:
+            i = i.strip().split(v)
+            if len(i) == 1:
+                if i[0] != " ":
+                    temp_dict["extra"] = i[0].strip()
                 else:
-                    continue
-            return 'top'
-        except IOError:
-            print(f"{error_color}Error: File do not exist.")
-            exit(0)
+                    pass
+            else:
+                temp_dict[i[0].strip()] = i[1].strip()
+        return temp_dict
 
-    #Seprate metadata into seprate objects and returns index of lines to skip
-    def extractMetaData(self):
-        metadata = []
-        skipLines = []
-        try:
-            if self.commentMode == 'top':
-                i = -1
-                fh = open(self.filename,'r')
-                for lines in fh:
-                    i += 1
-                    if lines[0] == '#':
-                        skipLines.append(i)
-                        metadata.append(lines)
-                    else:
-                        fh.close()
-                        return metadata,skipLines
-            elif self.commentMode == 'full':
-                i = -1
-                fh = open(self.filename,'r')
-                for lines in fh:
-                    i += 1
-                    if lines[0] == '#':
-                        skipLines.append(i)
-                        metadata.append(lines)
-                    else:
-                        continue
-                fh.close()
-                return metadata,skipLines
-        except:
-            print(f"{waring_color}Warning: Try using 'full' mode to read gff without comment lines.{color_end}")
-
-    #Show all features in a gff file
-    def showFeatureTags(self):
-        print(f"Unique Features in GFF : {self.filename}")
-        for i in self.feature_tags: 
-            print(f"  {i}")
-
+#@ new Reads the content of GTF/GFF file into a pandas dataframe
+    def dataParser(self):
+        self.data = pd.read_csv(self.fileobj,sep='\t',header=None,names=self.column_names,comment='#')
+        # Transforming attribute column values to columns takes time 
+        newinfo = pd.DataFrame.from_dict(dict(self.data["attribute"].str.split(self.colSep).apply(self.attributeDataTransform,v=self.valSep))).T
+        self.data = self.data.join(newinfo,how="left")
+        self.data.drop("attribute",axis=1,inplace=True)
+    
     #Show tags in info column given single feature as string or multiple feature as list of string
     def showgffFeatures(self,feature):
         typ = type(feature) 
@@ -90,7 +82,7 @@ class GffParser:
     def getFeatureTags(self):
         feature_common_tags = {}
         for features in self.feature_tags:
-            feature_data = self.data[self.data[2] == features]
+            feature_data = self.data[self.data["feature"] == features]
             totalFeatureRows = len(feature_data)
             info_tag_dict = {}
             for idx,fd in feature_data[8].items():
@@ -212,20 +204,50 @@ class GffParser:
         except:
             print("exception")
 
+#@ Gives general information on GTF/GFF file   
+    def generalInfo(self):
+        seqPerCount = pd.DataFrame(self.data['Seqname'].value_counts())
+        print(f"GTF/GFF source: {self.data['Source'].unique}")
+        print(f"No. of sequence set: {len(seqPerCount.index)}")
+        print(f"Sequence Set: {list(seqPerCount.index)}")
+        print(seqPerCount)
 
-    #def annotateBedCordinates(self,bedData):
 
 
+#@ main body
+filename= "sample.gtf"
+bioFileType = "gtf"
+# These values are for attribute column 
+columValue_Seperator = ";"
+valueKey_Seperator = " "
+gffp = tabFileReader(filename,bioFileType,columValue_Seperator,valueKey_Seperator)
+
+# EDA on data
+print(gffp.data.describe)
+# getting 
+print(gffp.data.info)
+# getting information on columns of the dataset
+print(gffp.data.dtypes)
+
+# Fetch all the commented lines from the file 
+gffp.getMetaData()
+
+# Fetch all the unique features from the table 
+print(f"Unique Features in GFF : {filename}")
+for i in gffp.data["feature"].unique(): 
+    print(f"  {i}")
 
 
-filename = "sample.gff"
-gffp = GffParser(filename)
-gffp.checkMode()
-# gffp.showFeatureTags()
-# print(gffp.getFeatureTags())
+# Fetch number of records per feature
+print(f"Number of records per features: ")
+feat_rec = gffp.data["feature"].value_counts()
+print(feat_rec)
+
+# Fetch records from features
+
 # gffp.showgffFeatures(['CDS','mRNA'])
 # data=gffp.getDataWithSingleFeature('mRNA')
-data=gffp.getDataWithMultipleFeatures(['mRNA','CDS'])
+# data=gffp.getDataWithMultipleFeatures(['mRNA','CDS'])
 # print(gffp.removeColumn(data,'Parent'))
 # gffp.dataToFile(gffp.getDataWithSingleFeature('mRNA'),"output2.tsv")
-gffp.dataToFile(gffp.getDataWithMultipleFeatures(['exon','CDS']),"output.tsv")
+# gffp.dataToFile(gffp.getDataWithMultipleFeatures(['exon','CDS']),"output.tsv")
